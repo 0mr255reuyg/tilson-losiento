@@ -7,7 +7,6 @@ import time
 
 st.set_page_config(page_title="T3 MTF Sinyal Tarayıcı", layout="wide", page_icon="📈")
 
-# ── HISSE LİSTESİ ──────────────────────────────────────────────────────────────
 BIST100 = [
     "AEFES","AGHOL","AKBNK","AKSA","AKSEN","ALARK","ALTNY","ANSGR","ARCLK","ASELS",
     "ASTOR","BALSU","BIMAS","BRSAN","BRYAT","BSOKE","BTCIM","CANTE","CCOLA","CIMSA",
@@ -31,7 +30,6 @@ T3_LENGTH    = 7
 T3_FACTOR    = 0.7
 YENILEME_DK  = 60
 
-# ── T3 HESAPLAMA ───────────────────────────────────────────────────────────────
 def hesapla_t3(close, length=7, factor=0.7):
     def ema(s, n):
         return s.ewm(span=n, adjust=False).mean()
@@ -72,7 +70,6 @@ def sinyal_bul(ticker, timeframe, length=7, factor=0.7, lookback=50):
     except Exception:
         return None
 
-# ── TARAMA ─────────────────────────────────────────────────────────────────────
 def tara(hisseler):
     sonuclar = []
     toplam = len(hisseler)
@@ -84,9 +81,9 @@ def tara(hisseler):
         s1g = sinyal_bul(ticker, "1g", T3_LENGTH, T3_FACTOR)
         if s4 is None and s1g is None:
             continue
-        durum_4s = s4["durum"]    if s4  else "-"
+        durum_4s = s4["durum"]         if s4  else "-"
         once_4s  = int(s4["mum_once"]) if s4  else 9999
-        durum_1g = s1g["durum"]   if s1g else "-"
+        durum_1g = s1g["durum"]        if s1g else "-"
         once_1g  = int(s1g["mum_once"]) if s1g else 9999
         genel = "AL" if "AL" in [durum_4s, durum_1g] else "SAT"
         sonuclar.append({
@@ -102,14 +99,13 @@ def tara(hisseler):
     progress_bar.empty()
     return pd.DataFrame(sonuclar)
 
-# ── GERİ SAYIM BARI ────────────────────────────────────────────────────────────
 def geri_sayim_bar():
     saniye = YENILEME_DK * 60
-    bar = st.progress(1.0)
+    bar   = st.progress(1.0)
     metin = st.empty()
     for kalan in range(saniye, 0, -1):
-        dk  = kalan // 60
-        sn  = kalan % 60
+        dk   = kalan // 60
+        sn   = kalan % 60
         oran = kalan / saniye
         bar.progress(oran)
         metin.caption(f"⏳ Sonraki tarama: {dk} dk {sn:02d} sn")
@@ -117,7 +113,6 @@ def geri_sayim_bar():
     bar.empty()
     metin.empty()
 
-# ── RENK FONKSİYONU ────────────────────────────────────────────────────────────
 def renk_sinyal(val):
     if val == "AL":
         return "background-color: #0d2e0d; color: #00e676; font-weight:bold"
@@ -125,10 +120,25 @@ def renk_sinyal(val):
         return "background-color: #2e0d0d; color: #ff5252; font-weight:bold"
     return "color: #888888"
 
+def stil_uygula(df):
+    # applymap yerine map — pandas 2.x uyumlu
+    try:
+        return df.style.map(renk_sinyal, subset=["4S Sinyal","1G Sinyal"])
+    except AttributeError:
+        return df.style.applymap(renk_sinyal, subset=["4S Sinyal","1G Sinyal"])
+
 def mum_label(val):
     if val >= 9999:
         return ">50"
     return str(val)
+
+def tablo_hazirla(df):
+    goster = df.sort_values("4S Mum Önce")[
+        ["Hisse","4S Sinyal","4S Mum Önce","1G Sinyal","1G Mum Önce"]
+    ].reset_index(drop=True)
+    goster["4S Mum Önce"] = goster["4S Mum Önce"].apply(mum_label)
+    goster["1G Mum Önce"] = goster["1G Mum Önce"].apply(mum_label)
+    return goster
 
 # ── ANA DÖNGÜ ──────────────────────────────────────────────────────────────────
 st.title("📈 Tilson T3 MTF Sinyal Tarayıcı")
@@ -145,7 +155,6 @@ with st.sidebar:
 
 while True:
     guncelleme = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-
     df = tara(TUM_HISSELER)
 
     if df.empty:
@@ -154,36 +163,26 @@ while True:
         al_df  = df[df["Genel"] == "AL"].copy()
         sat_df = df[(df["Genel"] == "SAT") & (~df["Hisse"].isin(al_df["Hisse"]))].copy()
 
-        # ── AL TABLOSU
         st.markdown("---")
         st.markdown(f"## 🟢 AL Sinyali — {len(al_df)} hisse")
         st.caption(f"Güncelleme: {guncelleme}")
         if not al_df.empty:
-            al_goster = al_df.sort_values("4S Mum Önce")[
-                ["Hisse","4S Sinyal","4S Mum Önce","1G Sinyal","1G Mum Önce"]
-            ].reset_index(drop=True)
-            al_goster["4S Mum Önce"] = al_goster["4S Mum Önce"].apply(mum_label)
-            al_goster["1G Mum Önce"] = al_goster["1G Mum Önce"].apply(mum_label)
+            al_g = tablo_hazirla(al_df)
             st.dataframe(
-                al_goster.style.applymap(renk_sinyal, subset=["4S Sinyal","1G Sinyal"]),
+                stil_uygula(al_g),
                 use_container_width=True,
-                height=min(500, 40 + len(al_goster) * 36),
+                height=min(500, 40 + len(al_g) * 36),
             )
         else:
             st.info("Şu an AL sinyali veren hisse yok.")
 
-        # ── SAT TABLOSU
         st.markdown(f"## 🔴 SAT Sinyali — {len(sat_df)} hisse")
         if not sat_df.empty:
-            sat_goster = sat_df.sort_values("4S Mum Önce")[
-                ["Hisse","4S Sinyal","4S Mum Önce","1G Sinyal","1G Mum Önce"]
-            ].reset_index(drop=True)
-            sat_goster["4S Mum Önce"] = sat_goster["4S Mum Önce"].apply(mum_label)
-            sat_goster["1G Mum Önce"] = sat_goster["1G Mum Önce"].apply(mum_label)
+            sat_g = tablo_hazirla(sat_df)
             st.dataframe(
-                sat_goster.style.applymap(renk_sinyal, subset=["4S Sinyal","1G Sinyal"]),
+                stil_uygula(sat_g),
                 use_container_width=True,
-                height=min(500, 40 + len(sat_goster) * 36),
+                height=min(500, 40 + len(sat_g) * 36),
             )
         else:
             st.info("Şu an SAT sinyali veren hisse yok.")
