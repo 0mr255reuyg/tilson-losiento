@@ -27,24 +27,24 @@ EK_HISSELER = [
 ]
 
 TUM_HISSELER = sorted(list(set(BIST100 + EK_HISSELER)))
+T3_LENGTH    = 7
+T3_FACTOR    = 0.7
+YENILEME_DK  = 60
 
 # ── T3 HESAPLAMA ───────────────────────────────────────────────────────────────
 def hesapla_t3(close, length=7, factor=0.7):
     def ema(s, n):
         return s.ewm(span=n, adjust=False).mean()
-
     e1 = ema(close, length)
     e2 = ema(e1, length)
     e3 = ema(e2, length)
     e4 = ema(e3, length)
     e5 = ema(e4, length)
     e6 = ema(e5, length)
-
     c1 = -(factor ** 3)
     c2 = 3 * factor**2 + 3 * factor**3
     c3 = -6 * factor**2 - 3 * factor - 3 * factor**3
     c4 = 1 + 3 * factor + factor**3 + 3 * factor**2
-
     return c1 * e6 + c2 * e5 + c3 * e4 + c4 * e3
 
 def sinyal_bul(ticker, timeframe, length=7, factor=0.7, lookback=50):
@@ -56,131 +56,140 @@ def sinyal_bul(ticker, timeframe, length=7, factor=0.7, lookback=50):
         if df is None or len(df) < length * 6 + 5:
             return None
         close = df["Close"].squeeze()
+        if not isinstance(close, pd.Series):
+            return None
         t3 = hesapla_t3(close, length, factor)
-        # Al sinyali: t3 önceki barın t3'ünün üstüne geçti
-        sinyal_barlari = []
-        for i in range(1, min(lookback, len(t3)-1)):
-            idx = -(i+1)
-            if t3.iloc[idx] < t3.iloc[idx-1] and t3.iloc[idx+1] >= t3.iloc[idx]:
-                sinyal_barlari.append(("AL", i))
-                break
-            if t3.iloc[idx] > t3.iloc[idx-1] and t3.iloc[idx+1] <= t3.iloc[idx]:
-                sinyal_barlari.append(("SAT", i))
-                break
-        # Son durum: hala AL mı SAT mı
-        son_durum = "AL" if t3.iloc[-1] >= t3.iloc[-2] else "SAT"
-        # En son crossover bul
-        for i in range(1, min(lookback, len(t3)-1)):
-            cur  = t3.iloc[-(i+1)]
-            prev = t3.iloc[-(i+2)]
-            nxt  = t3.iloc[-i]
-            if prev < cur and nxt >= cur:  # yukarı kırım = AL
-                return {"durum": "AL", "mum_once": i, "son_t3": round(float(t3.iloc[-1]), 2)}
-            if prev > cur and nxt <= cur:  # aşağı kırım = SAT
-                return {"durum": "SAT", "mum_once": i, "son_t3": round(float(t3.iloc[-1]), 2)}
-        return {"durum": son_durum, "mum_once": ">"+str(lookback), "son_t3": round(float(t3.iloc[-1]), 2)}
+        son_durum = "AL" if float(t3.iloc[-1]) >= float(t3.iloc[-2]) else "SAT"
+        for i in range(1, min(lookback, len(t3) - 2)):
+            prev = float(t3.iloc[-(i+2)])
+            cur  = float(t3.iloc[-(i+1)])
+            nxt  = float(t3.iloc[-i])
+            if prev < cur and nxt >= cur:
+                return {"durum": "AL",  "mum_once": i}
+            if prev > cur and nxt <= cur:
+                return {"durum": "SAT", "mum_once": i}
+        return {"durum": son_durum, "mum_once": lookback + 1}
     except Exception:
         return None
 
 # ── TARAMA ─────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)
-def tara(hisseler, length, factor):
+def tara(hisseler):
     sonuclar = []
-    for ticker in hisseler:
-        s4 = sinyal_bul(ticker, "4s", length, factor)
-        s1g = sinyal_bul(ticker, "1g", length, factor)
+    toplam = len(hisseler)
+    progress_bar = st.progress(0, text="Tarama başlıyor...")
+    for idx, ticker in enumerate(hisseler):
+        pct = (idx + 1) / toplam
+        progress_bar.progress(pct, text=f"🔍 Tarıyor: {ticker}  ({idx+1}/{toplam})")
+        s4  = sinyal_bul(ticker, "4s", T3_LENGTH, T3_FACTOR)
+        s1g = sinyal_bul(ticker, "1g", T3_LENGTH, T3_FACTOR)
         if s4 is None and s1g is None:
             continue
-        # En az birinde sinyal varsa ekle
-        durum_4s  = s4["durum"]  if s4  else "-"
-        once_4s   = s4["mum_once"] if s4 else "-"
-        durum_1g  = s1g["durum"] if s1g else "-"
-        once_1g   = s1g["mum_once"] if s1g else "-"
-        # Genel durum: AL varsa AL (herhangi birinde)
+        durum_4s = s4["durum"]    if s4  else "-"
+        once_4s  = int(s4["mum_once"]) if s4  else 9999
+        durum_1g = s1g["durum"]   if s1g else "-"
+        once_1g  = int(s1g["mum_once"]) if s1g else 9999
         genel = "AL" if "AL" in [durum_4s, durum_1g] else "SAT"
         sonuclar.append({
-            "Hisse": ticker,
-            "Genel": genel,
-            "4S Sinyal": durum_4s,
+            "Hisse":       ticker,
+            "Genel":       genel,
+            "4S Sinyal":   durum_4s,
             "4S Mum Önce": once_4s,
-            "1G Sinyal": durum_1g,
+            "1G Sinyal":   durum_1g,
             "1G Mum Önce": once_1g,
         })
+    progress_bar.progress(1.0, text="✅ Tarama tamamlandı!")
+    time.sleep(0.8)
+    progress_bar.empty()
     return pd.DataFrame(sonuclar)
 
-# ── ARAYÜZ ─────────────────────────────────────────────────────────────────────
-st.title("📈 Tilson T3 MTF Sinyal Tarayıcı")
-st.caption("BIST100 + Ek Hisseler | 4 Saatlik & Günlük | Otomatik Yenileme")
+# ── GERİ SAYIM BARI ────────────────────────────────────────────────────────────
+def geri_sayim_bar():
+    saniye = YENILEME_DK * 60
+    bar = st.progress(1.0)
+    metin = st.empty()
+    for kalan in range(saniye, 0, -1):
+        dk  = kalan // 60
+        sn  = kalan % 60
+        oran = kalan / saniye
+        bar.progress(oran)
+        metin.caption(f"⏳ Sonraki tarama: {dk} dk {sn:02d} sn")
+        time.sleep(1)
+    bar.empty()
+    metin.empty()
 
-with st.sidebar:
-    st.header("⚙️ Ayarlar")
-    length     = st.slider("T3 Uzunluk", 2, 20, 7)
-    factor_raw = st.slider("T3 Faktör (×0.10)", 1, 10, 7)
-    factor     = factor_raw * 0.10
-    yenileme   = st.slider("Yenileme (dakika)", 1, 60, 5)
-    st.markdown("---")
-    st.info(f"Toplam: **{len(TUM_HISSELER)}** hisse taranıyor")
-    st.caption(f"Son güncelleme: {datetime.now().strftime('%H:%M:%S')}")
-
-# Otomatik yenileme
-st_autorefresh = st.empty()
-with st_autorefresh:
-    st.markdown(
-        f'<meta http-equiv="refresh" content="{yenileme*60}">',
-        unsafe_allow_html=True
-    )
-
-with st.spinner("Hisseler taranıyor, lütfen bekleyin..."):
-    df = tara(tuple(TUM_HISSELER), length, factor)
-
-if df.empty:
-    st.warning("Hiç sinyal bulunamadı veya veri çekilemedi.")
-    st.stop()
-
-# AL/SAT ayrımı — AL listesindekiler SAT'tan otomatik çıkar
-al_df  = df[df["Genel"] == "AL"].copy()
-sat_df = df[(df["Genel"] == "SAT") & (~df["Hisse"].isin(al_df["Hisse"]))].copy()
-
-# ── AL TABLOSU ──────────────────────────────────────────────────────────────────
-st.markdown("## 🟢 AL Sinyali")
-st.caption(f"{len(al_df)} hisse | 4S veya 1G grafiğinde AL sinyali var")
-
+# ── RENK FONKSİYONU ────────────────────────────────────────────────────────────
 def renk_sinyal(val):
     if val == "AL":
-        return "background-color: #1a3a1a; color: #00ff88; font-weight:bold"
+        return "background-color: #0d2e0d; color: #00e676; font-weight:bold"
     elif val == "SAT":
-        return "background-color: #3a1a1a; color: #ff4444; font-weight:bold"
-    return ""
+        return "background-color: #2e0d0d; color: #ff5252; font-weight:bold"
+    return "color: #888888"
 
-if not al_df.empty:
-    al_df = al_df.sort_values("4S Mum Önce")
-    st.dataframe(
-        al_df[["Hisse","4S Sinyal","4S Mum Önce","1G Sinyal","1G Mum Önce"]]
-        .reset_index(drop=True)
-        .style.applymap(renk_sinyal, subset=["4S Sinyal","1G Sinyal"]),
-        use_container_width=True,
-        height=400
-    )
-else:
-    st.info("Şu an AL sinyali veren hisse yok.")
+def mum_label(val):
+    if val >= 9999:
+        return ">50"
+    return str(val)
 
-st.markdown("---")
+# ── ANA DÖNGÜ ──────────────────────────────────────────────────────────────────
+st.title("📈 Tilson T3 MTF Sinyal Tarayıcı")
+st.caption(f"BIST100 + Ek Hisseler  |  T3 Length: {T3_LENGTH}  |  Factor: {T3_FACTOR}  |  Yenileme: {YENILEME_DK} dk")
 
-# ── SAT TABLOSU ─────────────────────────────────────────────────────────────────
-st.markdown("## 🔴 SAT Sinyali")
-st.caption(f"{len(sat_df)} hisse | AL listesinde olmayanlar")
+with st.sidebar:
+    st.header("ℹ️ Bilgi")
+    st.metric("Toplam Hisse", len(TUM_HISSELER))
+    st.metric("T3 Uzunluk",   T3_LENGTH)
+    st.metric("T3 Faktör",    T3_FACTOR)
+    st.metric("Yenileme",     f"{YENILEME_DK} dk")
+    st.markdown("---")
+    st.info("Ayarlar sabittir.\nLength: 7 | Factor: 0.7")
 
-if not sat_df.empty:
-    sat_df = sat_df.sort_values("4S Mum Önce")
-    st.dataframe(
-        sat_df[["Hisse","4S Sinyal","4S Mum Önce","1G Sinyal","1G Mum Önce"]]
-        .reset_index(drop=True)
-        .style.applymap(renk_sinyal, subset=["4S Sinyal","1G Sinyal"]),
-        use_container_width=True,
-        height=400
-    )
-else:
-    st.info("Şu an SAT sinyali veren hisse yok.")
+while True:
+    guncelleme = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
-st.markdown("---")
-st.caption("⚠️ Bu uygulama yatırım tavsiyesi değildir. Veriler yfinance üzerinden çekilmektedir.")
+    df = tara(TUM_HISSELER)
+
+    if df.empty:
+        st.warning("Hiç sinyal bulunamadı veya veri çekilemedi.")
+    else:
+        al_df  = df[df["Genel"] == "AL"].copy()
+        sat_df = df[(df["Genel"] == "SAT") & (~df["Hisse"].isin(al_df["Hisse"]))].copy()
+
+        # ── AL TABLOSU
+        st.markdown("---")
+        st.markdown(f"## 🟢 AL Sinyali — {len(al_df)} hisse")
+        st.caption(f"Güncelleme: {guncelleme}")
+        if not al_df.empty:
+            al_goster = al_df.sort_values("4S Mum Önce")[
+                ["Hisse","4S Sinyal","4S Mum Önce","1G Sinyal","1G Mum Önce"]
+            ].reset_index(drop=True)
+            al_goster["4S Mum Önce"] = al_goster["4S Mum Önce"].apply(mum_label)
+            al_goster["1G Mum Önce"] = al_goster["1G Mum Önce"].apply(mum_label)
+            st.dataframe(
+                al_goster.style.applymap(renk_sinyal, subset=["4S Sinyal","1G Sinyal"]),
+                use_container_width=True,
+                height=min(500, 40 + len(al_goster) * 36),
+            )
+        else:
+            st.info("Şu an AL sinyali veren hisse yok.")
+
+        # ── SAT TABLOSU
+        st.markdown(f"## 🔴 SAT Sinyali — {len(sat_df)} hisse")
+        if not sat_df.empty:
+            sat_goster = sat_df.sort_values("4S Mum Önce")[
+                ["Hisse","4S Sinyal","4S Mum Önce","1G Sinyal","1G Mum Önce"]
+            ].reset_index(drop=True)
+            sat_goster["4S Mum Önce"] = sat_goster["4S Mum Önce"].apply(mum_label)
+            sat_goster["1G Mum Önce"] = sat_goster["1G Mum Önce"].apply(mum_label)
+            st.dataframe(
+                sat_goster.style.applymap(renk_sinyal, subset=["4S Sinyal","1G Sinyal"]),
+                use_container_width=True,
+                height=min(500, 40 + len(sat_goster) * 36),
+            )
+        else:
+            st.info("Şu an SAT sinyali veren hisse yok.")
+
+    st.markdown("---")
+    st.caption("⚠️ Bu uygulama yatırım tavsiyesi değildir.")
+
+    geri_sayim_bar()
+    st.rerun()
